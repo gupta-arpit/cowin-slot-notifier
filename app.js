@@ -3,6 +3,7 @@ var  nodemailer     = require("nodemailer")
    , moment         = require("moment")
    , cron = require('node-cron')
 
+const testing = false;
 
 require('dotenv').config()
 
@@ -14,11 +15,12 @@ let notify = async(person , slotDetails)=>{
         let rows = ``
         for (i=0;i<slotDetails.length;i++){
              let row = `<tr>
-                      <td>`+slotDetails[i].name+`</td>
-                      <td>`+slotDetails[i].district_name+`</td>
-                      <td>`+slotDetails[i].pincode+`</td>
+                      <td>`+slotDetails[i].center.name+`</td>
+                      <td>`+slotDetails[i].center.district_name+`</td>
+                      <td>`+slotDetails[i].center.pincode+`</td>
+                      <td>`+slotDetails[i].available_capacity+`</td>
                       <td>`+slotDetails[i].vaccine+`</td>
-                      <td>`+slotDetails[i].fee+`</td>
+                      <td>`+slotDetails[i].center.fee_type+`</td>
                     </tr>
                      `
              rows = rows + row       
@@ -68,6 +70,7 @@ let notify = async(person , slotDetails)=>{
                     <th>Center-Name</th>
                     <th>District</th>
                     <th>Pincode</th>
+                    <th>Slots available</th>
                     <th>Vaccine</th>
                     <th>Fee</th>
                 </tr>
@@ -89,18 +92,21 @@ let notify = async(person , slotDetails)=>{
             },
           });
 
-    
-          // send mail with defined transport object
-          let info = await transporter.sendMail({
-            from: process.env.EMAIL, // sender address
-            to: person.email, // list of receivers
-            subject:'Vaccine slot available', // Subject line
-            text: 'For clients with plaintext support only',
-            html: buff,
-          });
-
-       console.log(info)
-    }catch(error){
+        let totalSlotsAvailable = slotDetails.reduce((mem, s) => mem + s.available_capacity, 0);
+        let emails = testing ? person.testEmail.split(",") : person.email.split(",");
+        for (let i = 0; i < emails.length; i++) {
+            let email = emails[i];
+                      // send mail with defined transport object
+            let info = await transporter.sendMail({
+                from: process.env.EMAIL, // sender address
+                to: email, // list of receivers
+                subject:`${totalSlotsAvailable} vaccine slots available`, // Subject line
+                text: 'For clients with plaintext support only',
+                html: buff,
+            });
+            console.log(info);
+        }
+    } catch(error) {
        console.log(error)
        throw error   
     }
@@ -111,10 +117,10 @@ let notify = async(person , slotDetails)=>{
 let checkSlots = async(person,date)=>{
    try{
     
-    for(i = 0 ; i < person.districts.length ; i++ ) {
+    for(i = 0 ; i < person.pincodes.length ; i++ ) {
        let config = {
           method: 'get',
-          url: 'https://cdn-api.co-vin.in/api/v2/appointment/sessions/public/findByDistrict?district_id='+person.districts[i]+'&date='+date,
+          url: 'https://cdn-api.co-vin.in/api/v2/appointment/sessions/public/calendarByPin?pincode='+person.pincodes[i]+'&date='+date,
           headers: {
               'accept': 'application/json',
               'Accept-Language': 'hi_IN',
@@ -123,11 +129,13 @@ let checkSlots = async(person,date)=>{
         }
 
        response = await axios(config)
-       let sessions = response.data.sessions;
-       let validSlots = sessions.filter(slot => slot.min_age_limit <= person.age &&  slot.available_capacity > 0)
+       let centers = response.data.centers;
+       let sessions = centers.reduce((mem, c) => [...mem, ...c.sessions.map(s => ({...s, center: c}))], []);
+       let validSlots = testing ? sessions : sessions.filter(slot => slot.min_age_limit <= person.age &&  slot.available_capacity > 0)
+    //    console.log(validSlots)
        console.log({date:date, validSlots: validSlots.length})
-       if(validSlots.length > 0) {
-                  await notify(person,validSlots);
+       if(validSlots.length > 0 || testing) {
+            await notify(person, validSlots);
        }       
      }  
    }catch(error){
@@ -137,10 +145,10 @@ let checkSlots = async(person,date)=>{
 }
 
 
-let fetchNext10Days = async()=>{
+let fetchNext5Days = async()=>{
     let dates = [];
     let today = moment();
-    for(let i = 0 ; i < 10 ; i ++ ){
+    for(let i = 0 ; i < 5 ; i ++ ){
         let dateString = today.format('DD-MM-YYYY')
         dates.push(dateString);
         today.add(1, 'day');
@@ -149,7 +157,7 @@ let fetchNext10Days = async()=>{
 }
 
 let checkAvailability = async(person)=>{
-    let datesArray = await fetchNext10Days();
+    let datesArray = await fetchNext5Days();
     datesArray.forEach(async(date) => {
         await checkSlots(person,date)
     })
@@ -162,11 +170,15 @@ let main = async()=>{
     try {
 
         let person = {
-          districts : [650,145,651],
+          pincodes : [473660],
           email : process.env.PERSON, // email of the person
-          age : 45 //minimum tracking age
+          age : 18, //minimum tracking age
+          testEmail : process.env.TEST_PERSON,
         }
-
+        if (testing) {
+            // test immediately
+            checkAvailability(person)
+        }
        cron.schedule('*/1 * * * *', async () => {
              checkAvailability(person)
        });
